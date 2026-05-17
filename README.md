@@ -14,4 +14,7 @@ PROJECT DESCRIPTION
 
 Dynamic SOAP Request Generation and CSV Export Utility is a software solution developed using C# and SQL Server to automate the creation of SOAP XML requests and export metadata into CSV format. The project simplifies enterprise API integration workflows, reduces manual effort, and improves efficiency in data processing and system communication.
 
+PROJECT TYPE 
+COPYRIGHT
+
 
