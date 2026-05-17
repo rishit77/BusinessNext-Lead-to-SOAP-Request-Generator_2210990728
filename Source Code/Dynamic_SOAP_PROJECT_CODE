@@ -1,0 +1,345 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+class Program
+{
+    static void Main()
+    {
+        // ==== SQL Connection Details ====
+        string serverName = "192.168.0.59";
+        string dbName = "Ujjivan_G7_UAT_V1";
+        string dbUser = "crmnext";
+        string dbPass = "abc123";
+
+        // ==== Input OwnerId + LayoutId ====
+        Console.Write("Enter Owner ID: ");
+        if (!int.TryParse(Console.ReadLine(), out int ownerId))
+        {
+            Console.WriteLine("Invalid Owner ID.");
+            return;
+        }
+
+        Console.Write("Enter Layout ID: ");
+        if (!int.TryParse(Console.ReadLine(), out int layoutId))
+        {
+            Console.WriteLine("Invalid Layout ID.");
+            return;
+        }
+
+        // ==== Ask SOAP Request? ====
+        Console.Write("Do you want SOAP request? (yes/no): ");
+        string wantSoap = Console.ReadLine()?.Trim().ToLower();
+        if (wantSoap != "yes" && wantSoap != "y")
+        {
+            Console.WriteLine("Exiting as SOAP request not wanted.");
+            return;
+        }
+
+        // ==== Choose SOAP method ====
+        Console.WriteLine("\nSelect SOAP method:");
+        Console.WriteLine("1. Save");
+        Console.WriteLine("2. SaveObject");
+
+        if (!int.TryParse(Console.ReadLine(), out int soapChoice))
+        {
+            Console.WriteLine("Invalid choice.");
+            return;
+        }
+
+        string connectionString =
+            $"Server={serverName};Database={dbName};User Id={dbUser};Password={dbPass};";
+
+        List<LayoutField> fields = new List<LayoutField>();
+
+        // ✅ Folder where files will be created
+        string outputDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+            "SOAP_OUTPUT_FILES");
+
+        Directory.CreateDirectory(outputDir);
+
+        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
+        string csvFilePath = Path.Combine(outputDir, $"LayoutFields_{timestamp}.csv");
+        string xmlFilePath = Path.Combine(outputDir, $"SoapRequest_{timestamp}.xml");
+
+        try
+        {
+            // ==== Fetch Fields from SP ====
+            using (SqlConnection conn = new SqlConnection(connectionString))
+            using (SqlCommand cmd = new SqlCommand("Get_Layout_Field_Details_SQL_UJVN", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+
+                cmd.Parameters.Add("@OwnerId", SqlDbType.Int).Value = ownerId;
+                cmd.Parameters.Add("@LayoutId", SqlDbType.Int).Value = layoutId;
+                cmd.Parameters.Add("@LayoutType", SqlDbType.Int).Value = 1; // hardcoded
+
+                conn.Open();
+
+                using (SqlDataReader reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        fields.Add(new LayoutField
+                        {
+                            GroupId = Convert.ToInt32(reader[0]),
+                            LayoutName = reader[1]?.ToString() ?? "",
+                            FieldId = reader[2]?.ToString() ?? "",
+                            FieldName = reader[5]?.ToString() ?? "",
+                            ColumnName = SafeRead(reader, "ColumnName")
+                        });
+                    }
+                }
+            }
+
+            if (!fields.Any())
+            {
+                Console.WriteLine("No data returned from stored procedure.");
+                return;
+            }
+
+            // ✅ Save SP output to CSV
+            SaveFieldsToCsv(fields, csvFilePath);
+            Console.WriteLine($"\n✅ Stored procedure output saved to CSV:\n{csvFilePath}");
+
+            // ==== Group selection AFTER method selection ====
+            var groups = fields
+                .GroupBy(f => new { f.GroupId, f.LayoutName })
+                .OrderBy(g => g.Key.GroupId)
+                .ToList();
+
+            Console.WriteLine("\nSelect Group:");
+            for (int i = 0; i < groups.Count; i++)
+            {
+                Console.WriteLine($"{i + 1}. GroupId: {groups[i].Key.GroupId}, Layout: {groups[i].Key.LayoutName}");
+            }
+
+            if (!int.TryParse(Console.ReadLine(), out int groupChoice) ||
+                groupChoice < 1 || groupChoice > groups.Count)
+            {
+                Console.WriteLine("Invalid group choice.");
+                return;
+            }
+
+            var selectedGroup = groups[groupChoice - 1].ToList();
+
+            // ==== Generate SOAP ====
+            string soapXml;
+
+            // Hardcoded userFieldName + userFieldValue as per example
+            string userFieldName = "LoginID";
+            string userFieldValue = "Rishit";
+
+            // Token fixed as per example
+            string token = "qjg8clqv8mjs5njd6l2s676fk78fkkusxjf9nsunutbdddbmrjk5gjl8qtgcbgeft7en923cbyl8aeay55qgqq43ggjeu8knjnu7t5neelkfndybdswqe58qhpsvd92vmsha6m9jz262vw3purqjk7lghssy2d43bn8pulxdhj5g36zr2rwkpzcljhwpw7l2xkph9mesdg4t8cujcq7axudjkjuy2443ybm57vxtvnz8k6bdvs4bupfmnde25a57b3uxd224fmums2l6cts76dhd7fk3qrrzbxw68xeagxdc2cp5kl3czsd5rkn6jcgpjtww47ezy75lsw6yl3beheecy7x2kljmw2y8sgkczvmvp2bxxav3pkvxywgcytdvlpkwv273nfuaeawszm3wse4c8wjlqd83mk2mfj2yqg8huqrkvfm6e4kn9uvs3nkfta5k94bkuy5f7khshtfv6uwdv78ywfxh2l5u2ztc7nc8rvl3debdjtecrcr3yt3scv3jqhwhsmtcvhc53vep8t4qu7zk5w9k4vz3mulbu4lxvg5k5cpsnpwpzdrq546zhkd7a678e53lggw8m5ed4r6lss";
+
+            if (soapChoice == 1)
+            {
+                soapXml = GenerateSoapSave(selectedGroup, layoutId, userFieldName, userFieldValue, token);
+            }
+            else if (soapChoice == 2)
+            {
+                soapXml = GenerateSaveObjectSoap(selectedGroup, layoutId, userFieldName, userFieldValue, token);
+            }
+            else
+            {
+                Console.WriteLine("Invalid choice.");
+                return;
+            }
+
+            // ✅ Save SOAP output to XML file
+            File.WriteAllText(xmlFilePath, soapXml, Encoding.UTF8);
+            Console.WriteLine($"\n✅ SOAP request saved to XML:\n{xmlFilePath}");
+
+            Console.WriteLine("\n===== GENERATED SOAP REQUEST (Preview) =====\n");
+            Console.WriteLine(soapXml);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error:");
+            Console.WriteLine(ex.Message);
+        }
+
+        Console.WriteLine("\nPress any key to exit...");
+        Console.ReadKey();
+    }
+
+    // ================= SAVE METHOD =================
+    static string GenerateSoapSave(List<LayoutField> fields, int layoutId, string userFieldName, string userFieldValue, string token)
+    {
+        string XmlEscape(string v) => System.Security.SecurityElement.Escape(v ?? "") ?? "";
+        var sb = new StringBuilder();
+
+        sb.AppendLine("<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:api=\"http://www.crmnext.com/api/\">");
+        sb.AppendLine("  <soapenv:Header/>");
+        sb.AppendLine("  <soapenv:Body>");
+        sb.AppendLine("    <api:Save>");
+        sb.AppendLine("      <api:userContext>");
+        sb.AppendLine("        <api:IsSuccess>true</api:IsSuccess>");
+        sb.AppendLine("        <api:Message xsi:nil=\"true\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"/>");
+        sb.AppendLine("        <api:ClientTimeOffSet>0</api:ClientTimeOffSet>");
+        sb.AppendLine("        <api:ExpiresOn>2616-09-15T20:14:55.1201093+05:30</api:ExpiresOn>");
+        sb.AppendLine("        <api:IsUTC>false</api:IsUTC>");
+        sb.AppendLine("        <api:LongDateFormat>dd/MM/yyyy</api:LongDateFormat>");
+        sb.AppendLine("        <api:LongDateTimeFormat>dd/MM/yyyy hh:mm tt</api:LongDateTimeFormat>");
+        sb.AppendLine($"        <api:Token>{XmlEscape(token)}</api:Token>");
+        sb.AppendLine($"        <api:UserFieldName>{XmlEscape(userFieldName)}</api:UserFieldName>");
+        sb.AppendLine($"        <api:UserFieldValue>{XmlEscape(userFieldValue)}</api:UserFieldValue>");
+        sb.AppendLine("      </api:userContext>");
+        sb.AppendLine("      <api:objects>");
+        sb.AppendLine("        <api:CRMnextObject xsi:type=\"api:Case\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
+
+        sb.AppendLine("          <api:CategoryID>6216</api:CategoryID>");
+        sb.AppendLine("          <api:Custom>");
+
+        foreach (var f in fields)
+        {
+            if (string.IsNullOrWhiteSpace(f.FieldId)) continue;
+            string fieldId = f.FieldId.Trim();
+
+            if (fieldId.StartsWith("cust_", StringComparison.OrdinalIgnoreCase))
+            {
+                string number = fieldId.Substring(5);
+                sb.AppendLine($"            <api:FieldID_{XmlEscape(number)}>VALUE</api:FieldID_{XmlEscape(number)}>");
+            }
+            else
+            {
+                sb.AppendLine($"            <api:{XmlEscape(fieldId)}>VALUE</api:{XmlEscape(fieldId)}>");
+            }
+        }
+
+        sb.AppendLine("          </api:Custom>");
+        sb.AppendLine($"          <api:LayoutKey>{layoutId}</api:LayoutKey>");
+        sb.AppendLine("          <api:PriorityKey>2</api:PriorityKey>");
+        sb.AppendLine("          <api:ProductKey>304</api:ProductKey>");
+        sb.AppendLine("          <api:ReportedOn>08-12-2025</api:ReportedOn>");
+        sb.AppendLine("          <api:StatusCodeKey>1</api:StatusCodeKey>");
+        sb.AppendLine("          <api:SubCategoryID>6291</api:SubCategoryID>");
+        sb.AppendLine("          <api:SubCategoryID1>6321</api:SubCategoryID1>");
+        sb.AppendLine("          <api:Subject>Mandate Registration/Cancellation</api:Subject>");
+
+        sb.AppendLine("        </api:CRMnextObject>");
+        sb.AppendLine("      </api:objects>");
+        sb.AppendLine("      <api:returnObjectOnSave>true</api:returnObjectOnSave>");
+        sb.AppendLine("    </api:Save>");
+        sb.AppendLine("  </soapenv:Body>");
+        sb.AppendLine("</soapenv:Envelope>");
+
+        return sb.ToString();
+    }
+
+    // ================= SAVE OBJECT =================
+    static string GenerateSaveObjectSoap(List<LayoutField> fields, int layoutId, string userFieldName, string userFieldValue, string token)
+    {
+        string XmlEscape(string v) => System.Security.SecurityElement.Escape(v ?? "") ?? "";
+        var sb = new StringBuilder();
+
+        sb.AppendLine("<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" ");
+        sb.AppendLine("\txmlns:api=\"http://www.crmnext.com/api/\" ");
+        sb.AppendLine("\txmlns:arr=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\">");
+        sb.AppendLine("<soapenv:Header/>");
+        sb.AppendLine("<soapenv:Body>");
+        sb.AppendLine("<api:SaveObject>");
+
+        sb.AppendLine("<api:userContext>");
+        sb.AppendLine("<api:IsSuccess>true</api:IsSuccess>");
+        sb.AppendLine("<api:ExpiresOn>2617-09-19T07:14:43.1651846+05:30</api:ExpiresOn>");
+        sb.AppendLine("<api:LongDateFormat>dd/MM/yyyy</api:LongDateFormat>");
+        sb.AppendLine("<api:LongDateTimeFormat>dd/MM/yyyy hh:mm tt</api:LongDateTimeFormat>");
+        sb.AppendLine($"<api:Token>{XmlEscape(token)}</api:Token>");
+        sb.AppendLine($"<api:UserFieldName>{XmlEscape(userFieldName)}</api:UserFieldName>");
+        sb.AppendLine($"<api:UserFieldValue>{XmlEscape(userFieldValue)}</api:UserFieldValue>");
+        sb.AppendLine("</api:userContext>");
+
+        sb.AppendLine("<api:objectInfo>");
+        sb.AppendLine("<api:SaveRequest>");
+        sb.AppendLine("<api:ItemId>-1</api:ItemId>");
+        sb.AppendLine("<api:ItemType>Issue</api:ItemType>");
+        sb.AppendLine("<api:ObjectData>");
+
+        foreach (var f in fields)
+        {
+            if (string.IsNullOrWhiteSpace(f.ColumnName))
+                continue;
+
+            sb.AppendLine("<arr:KeyValueOfstringstring>");
+            sb.AppendLine($"<arr:Key>{XmlEscape(f.ColumnName)}</arr:Key>");
+            sb.AppendLine("<arr:Value/>");
+            sb.AppendLine("</arr:KeyValueOfstringstring>");
+        }
+
+        sb.AppendLine("<arr:KeyValueOfstringstring>");
+        sb.AppendLine("<arr:Key>LayoutID</arr:Key>");
+        sb.AppendLine($"<arr:Value>{layoutId}</arr:Value>");
+        sb.AppendLine("</arr:KeyValueOfstringstring>");
+
+        sb.AppendLine("</api:ObjectData>");
+
+        sb.AppendLine("<api:OutputFieldList>");
+        sb.AppendLine("<arr:string>ItemID</arr:string>");
+        sb.AppendLine("</api:OutputFieldList>");
+
+        sb.AppendLine("</api:SaveRequest>");
+        sb.AppendLine("</api:objectInfo>");
+        sb.AppendLine("</api:SaveObject>");
+        sb.AppendLine("</soapenv:Body>");
+        sb.AppendLine("</soapenv:Envelope>");
+
+        return sb.ToString();
+    }
+
+    // ✅ Save SP output into CSV
+    static void SaveFieldsToCsv(List<LayoutField> fields, string filePath)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("GroupId,LayoutName,FieldId,FieldName,ColumnName");
+
+        foreach (var f in fields)
+        {
+            sb.AppendLine($"{CsvEscape(f.GroupId.ToString())}," +
+                          $"{CsvEscape(f.LayoutName)}," +
+                          $"{CsvEscape(f.FieldId)}," +
+                          $"{CsvEscape(f.FieldName)}," +
+                          $"{CsvEscape(f.ColumnName)}");
+        }
+
+        File.WriteAllText(filePath, sb.ToString(), Encoding.UTF8);
+    }
+
+    static string CsvEscape(string input)
+    {
+        if (input == null) return "";
+        if (input.Contains(",") || input.Contains("\"") || input.Contains("\n"))
+            return "\"" + input.Replace("\"", "\"\"") + "\"";
+        return input;
+    }
+
+    static string SafeRead(SqlDataReader reader, string colName)
+    {
+        try
+        {
+            int index = reader.GetOrdinal(colName);
+            return reader.IsDBNull(index) ? "" : reader.GetValue(index)?.ToString() ?? "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+}
+
+// ================= MODEL =================
+class LayoutField
+{
+    public int GroupId { get; set; }
+    public string LayoutName { get; set; }
+    public string FieldId { get; set; }
+    public string FieldName { get; set; }
+    public string ColumnName { get; set; }
+}
